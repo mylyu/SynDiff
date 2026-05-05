@@ -607,33 +607,40 @@ def train_syndiff(rank, gpu, args):
             scheduler_disc_non_diffusive_cycle2.step()
         
         if rank == 0:
+            # Use underlying (non-DDP) models for sample generation to avoid
+            # NCCL parameter broadcasts that would hang other ranks.
+            gen1 = gen_diffusive_1.module if hasattr(gen_diffusive_1, 'module') else gen_diffusive_1
+            gen2 = gen_diffusive_2.module if hasattr(gen_diffusive_2, 'module') else gen_diffusive_2
+            nd1to2 = gen_non_diffusive_1to2.module if hasattr(gen_non_diffusive_1to2, 'module') else gen_non_diffusive_1to2
+            nd2to1 = gen_non_diffusive_2to1.module if hasattr(gen_non_diffusive_2to1, 'module') else gen_non_diffusive_2to1
+
             if epoch % 10 == 0:
                 torchvision.utils.save_image(x1_pos_sample, os.path.join(exp_path, 'xpos1_epoch_{}.png'.format(epoch)), normalize=True)
                 torchvision.utils.save_image(x2_pos_sample, os.path.join(exp_path, 'xpos2_epoch_{}.png'.format(epoch)), normalize=True)
             #concatenate noise and source contrast
             x1_t = torch.cat((torch.randn_like(real_data1),real_data2),axis=1)
-            fake_sample1 = sample_from_model(pos_coeff, gen_diffusive_1, args.num_timesteps, x1_t, T, args)
+            fake_sample1 = sample_from_model(pos_coeff, gen1, args.num_timesteps, x1_t, T, args)
             fake_sample1 = torch.cat((real_data2, fake_sample1),axis=-1)
             torchvision.utils.save_image(fake_sample1, os.path.join(exp_path, 'sample1_discrete_epoch_{}.png'.format(epoch)), normalize=True)
-            pred1 = gen_non_diffusive_2to1(real_data2)
+            pred1 = nd2to1(real_data2)
             #
             x2_t = torch.cat((torch.randn_like(real_data2), pred1),axis=1)
-            fake_sample2_tilda = gen_diffusive_2(x2_t , t2, latent_z2)   
+            fake_sample2_tilda = gen2(x2_t , t2, latent_z2)
             #
-            pred1 = torch.cat((real_data2, pred1, gen_non_diffusive_1to2(pred1), fake_sample2_tilda[:,[0],:]),axis=-1)
+            pred1 = torch.cat((real_data2, pred1, nd1to2(pred1), fake_sample2_tilda[:,[0],:]),axis=-1)
             torchvision.utils.save_image(pred1, os.path.join(exp_path, 'sample1_translated_epoch_{}.png'.format(epoch)), normalize=True)
 
 
             x2_t = torch.cat((torch.randn_like(real_data2),real_data1),axis=1)
-            fake_sample2 = sample_from_model(pos_coeff, gen_diffusive_2, args.num_timesteps, x2_t, T, args)
+            fake_sample2 = sample_from_model(pos_coeff, gen2, args.num_timesteps, x2_t, T, args)
             fake_sample2 = torch.cat((real_data1, fake_sample2),axis=-1)
             torchvision.utils.save_image(fake_sample2, os.path.join(exp_path, 'sample2_discrete_epoch_{}.png'.format(epoch)), normalize=True)
-            pred2 = gen_non_diffusive_1to2(real_data1)
+            pred2 = nd1to2(real_data1)
             #
             x1_t = torch.cat((torch.randn_like(real_data1), pred2),axis=1)
-            fake_sample1_tilda = gen_diffusive_1(x1_t , t1, latent_z1)   
-            #            
-            pred2 = torch.cat((real_data1, pred2, gen_non_diffusive_2to1(pred2), fake_sample1_tilda[:,[0],:]),axis=-1)
+            fake_sample1_tilda = gen1(x1_t , t1, latent_z1)
+            #
+            pred2 = torch.cat((real_data1, pred2, nd2to1(pred2), fake_sample1_tilda[:,[0],:]),axis=-1)
             torchvision.utils.save_image(pred2, os.path.join(exp_path, 'sample2_translated_epoch_{}.png'.format(epoch)), normalize=True)
            
             if args.save_content:
@@ -672,6 +679,7 @@ def train_syndiff(rank, gpu, args):
                     optimizer_gen_non_diffusive_2to1.swap_parameters_with_ema(store_params_in_ema=True)
 
 
+        dist.barrier()
         for iteration, (x_val , y_val) in enumerate(data_loader_val): 
         
             real_data = x_val.to(device, non_blocking=True)

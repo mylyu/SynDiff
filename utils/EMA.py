@@ -16,6 +16,9 @@ from torch.optim import Optimizer
 
 class EMA(Optimizer):
     def __init__(self, opt, ema_decay):
+        # Fix PyTorch 2.6 compatibility: properly init Optimizer base
+        defaults = dict()
+        super().__init__(opt.param_groups, defaults)
         self.ema_decay = ema_decay
         self.apply_ema = self.ema_decay > 0.
         self.optimizer = opt
