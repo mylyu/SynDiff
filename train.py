@@ -1,6 +1,7 @@
 
 
 import argparse
+import copy
 import torch
 import numpy as np
 
@@ -232,8 +233,8 @@ def train_syndiff(rank, gpu, args):
                                                sampler=val_sampler,
                                                drop_last = True)
 
-    val_l1_loss=np.zeros([2,args.num_epoch,len(data_loader_val)])
-    val_psnr_values=np.zeros([2,args.num_epoch,len(data_loader_val)])
+    val_l1_loss=np.zeros([2,args.num_epoch+1,len(data_loader_val)])
+    val_psnr_values=np.zeros([2,args.num_epoch+1,len(data_loader_val)])
     print('train data size:'+str(len(data_loader)))
     print('val data size:'+str(len(data_loader_val)))
     to_range_0_1 = lambda x: (x + 1.) / 2.
@@ -366,7 +367,7 @@ def train_syndiff(rank, gpu, args):
         global_step, epoch, init_epoch = 0, 0, 0
     
     
-    for epoch in range(init_epoch, args.num_epoch+1):
+    for epoch in range(init_epoch + 1, args.num_epoch+1):
         train_sampler.set_epoch(epoch)
        
         for iteration, (x1, x2) in enumerate(data_loader):
@@ -722,8 +723,9 @@ def train_syndiff(rank, gpu, args):
         np.save('{}/val_psnr_values.npy'.format(exp_path), val_psnr_values)               
 
 
-def init_processes(rank, size, fn, args):
+def init_processes(rank, size, fn, args, local_rank):
     """ Initialize the distributed environment. """
+    args.local_rank = local_rank
     os.environ['MASTER_ADDR'] = args.master_address
     os.environ['MASTER_PORT'] = args.port_num
     torch.cuda.set_device(args.local_rank)
@@ -853,17 +855,18 @@ if __name__ == '__main__':
     if size > 1:
         processes = []
         for rank in range(size):
-            args.local_rank = rank
+            process_args = copy.deepcopy(args)
+            process_args.local_rank = rank
             global_rank = rank + args.node_rank * args.num_process_per_node
             global_size = args.num_proc_node * args.num_process_per_node
-            args.global_rank = global_rank
+            process_args.global_rank = global_rank
             print('Node rank %d, local proc %d, global proc %d' % (args.node_rank, rank, global_rank))
-            p = Process(target=init_processes, args=(global_rank, global_size, train_syndiff, args))
+            p = Process(target=init_processes, args=(global_rank, global_size, train_syndiff, process_args, rank))
             p.start()
             processes.append(p)
-            
+
         for p in processes:
             p.join()
     else:
-        
-        init_processes(0, size, train_syndiff, args)
+
+        init_processes(0, size, train_syndiff, args, 0)

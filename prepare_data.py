@@ -10,7 +10,7 @@ Output: HDF5 .mat files with variable 'data_fs', shape (N, 256, 256), values in 
 
 import argparse
 import os
-import sys
+import json
 import numpy as np
 import h5py
 import nibabel as nib
@@ -23,7 +23,14 @@ def extract_slices(nifti_path, crop_size=256):
     """
     img = nib.load(nifti_path)
     data = img.get_fdata().astype(np.float32)  # (H, W, D)
+    data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+    data = np.clip(data, 0.0, 1.0)
     H, W, D = data.shape
+
+    if H < crop_size or W < crop_size:
+        raise ValueError(
+            f"{nifti_path} has in-plane shape {(H, W)}, smaller than crop_size={crop_size}"
+        )
 
     x_start = (H - crop_size) // 2
     y_start = (W - crop_size) // 2
@@ -43,10 +50,17 @@ def filter_slices(slices, threshold=0.01):
     return slices[keep], keep
 
 
-def process_retrospective_field(data_dir, contrast, field_strength, crop_size, threshold):
-    """Load all subjects for one field strength from retrospective data, extract and filter slices."""
+def process_retrospective_field(data_dir, contrast, field_strength, crop_size, threshold, file_list=None):
+    """Load all subjects for one field strength from retrospective data, extract and filter slices.
+
+    If file_list is provided, only files whose relative path (e.g.
+    Training_retrospective/T1W/0.1T/R_T1W_0.1T_0001.nii.gz) is in the set will be used.
+    """
     fs_dir = os.path.join(data_dir, 'Training_retrospective', contrast, field_strength)
     files = sorted([f for f in os.listdir(fs_dir) if f.endswith('.nii.gz')])
+    if file_list is not None:
+        allowed = set(file_list)
+        files = [f for f in files if f'Training_retrospective/{contrast}/{field_strength}/{f}' in allowed]
     all_slices = []
     print(f"  Processing {len(files)} subjects from {fs_dir} ...")
     for i, fname in enumerate(files):
@@ -108,6 +122,7 @@ def _extract_subject_id(filename):
 
 def save_mat(output_path, array):
     """Save numpy array as HDF5 .mat file with 'data_fs' variable."""
+    array = np.asarray(array, dtype=np.float32)
     print(f"  Saving {array.shape} to {output_path} ...")
     with h5py.File(output_path, 'w') as f:
         f.create_dataset('data_fs', data=array)
@@ -121,6 +136,10 @@ def main():
                         help='Directory for output .mat files')
     parser.add_argument('--contrast', type=str, default='T1W',
                         help='MRI contrast (default: T1W)')
+    parser.add_argument('--field_a', type=str, default='0.1T',
+                        help='Source field strength (default: 0.1T)')
+    parser.add_argument('--field_b', type=str, default='1.5T',
+                        help='Target field strength (default: 1.5T)')
     parser.add_argument('--crop_size', type=int, default=256,
                         help='Center-crop size (default: 256)')
     parser.add_argument('--empty_threshold', type=float, default=0.01,
@@ -129,24 +148,33 @@ def main():
                         help='Validation split ratio (default: 0.2)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for shuffling (default: 42)')
+    parser.add_argument('--file_list', type=str, default=None,
+                        help='Optional path to a .txt listing specific NIfTI files to use')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
     rng = np.random.default_rng(args.seed)
 
-    field_a = '0.1T'
-    field_b = '1.5T'
+    field_a = args.field_a
+    field_b = args.field_b
+
+    # ---- File list (optional subset) ----
+    file_list = None
+    if args.file_list:
+        with open(args.file_list) as f:
+            file_list = set(line.strip() for line in f if line.strip())
+        print(f"\n=== Using file list: {len(file_list)} allowed files ===")
 
     # ---- Retrospective (unpaired) ----
-    print("\n=== Retrospective: 0.1T ===")
+    print(f"\n=== Retrospective: {field_a} ===")
     data_01T = process_retrospective_field(
         args.data_root, args.contrast, field_a,
-        args.crop_size, args.empty_threshold)
+        args.crop_size, args.empty_threshold, file_list)
 
-    print("\n=== Retrospective: 1.5T ===")
+    print(f"\n=== Retrospective: {field_b} ===")
     data_15T = process_retrospective_field(
         args.data_root, args.contrast, field_b,
-        args.crop_size, args.empty_threshold)
+        args.crop_size, args.empty_threshold, file_list)
 
     # Shuffle independently (unpaired)
     print("\n=== Shuffling and splitting (unpaired) ===")
@@ -156,28 +184,17 @@ def main():
     n_val_01T = int(data_01T.shape[0] * args.val_ratio)
     n_val_15T = int(data_15T.shape[0] * args.val_ratio)
 
-    print(f"  0.1T: {data_01T.shape[0]} total → {data_01T.shape[0] - n_val_01T} train / {n_val_01T} val")
-    print(f"  1.5T: {data_15T.shape[0]} total → {data_15T.shape[0] - n_val_15T} train / {n_val_15T} val")
+    print(f"  {field_a}: {data_01T.shape[0]} total -> {data_01T.shape[0] - n_val_01T} train / {n_val_01T} val")
+    print(f"  {field_b}: {data_15T.shape[0]} total -> {data_15T.shape[0] - n_val_15T} train / {n_val_15T} val")
 
-    train_a = data_01T[n_val_01T:]
-    train_b = data_15T[n_val_15T:]
-    val_a = data_01T[:n_val_01T]
-    val_b = data_15T[:n_val_15T]
-
-    # Truncate to equal sizes (TensorDataset requires matching first dims)
-    if train_a.shape[0] != train_b.shape[0]:
-        min_n = min(train_a.shape[0], train_b.shape[0])
-        print(f"  Truncating train sets to min size: {min_n}")
-        train_a, train_b = train_a[:min_n], train_b[:min_n]
-    if val_a.shape[0] != val_b.shape[0]:
-        min_n = min(val_a.shape[0], val_b.shape[0])
-        print(f"  Truncating val sets to min size: {min_n}")
-        val_a, val_b = val_a[:min_n], val_b[:min_n]
-
-    save_mat(os.path.join(args.output_dir, f'data_train_{field_a}.mat'), train_a)
-    save_mat(os.path.join(args.output_dir, f'data_val_{field_a}.mat'), val_a)
-    save_mat(os.path.join(args.output_dir, f'data_train_{field_b}.mat'), train_b)
-    save_mat(os.path.join(args.output_dir, f'data_val_{field_b}.mat'), val_b)
+    save_mat(os.path.join(args.output_dir, f'data_train_{field_a}.mat'),
+             data_01T[n_val_01T:])
+    save_mat(os.path.join(args.output_dir, f'data_val_{field_a}.mat'),
+             data_01T[:n_val_01T])
+    save_mat(os.path.join(args.output_dir, f'data_train_{field_b}.mat'),
+             data_15T[n_val_15T:])
+    save_mat(os.path.join(args.output_dir, f'data_val_{field_b}.mat'),
+             data_15T[:n_val_15T])
 
     # ---- Prospective (paired) ----
     print("\n=== Prospective: Paired test set ===")
@@ -189,8 +206,30 @@ def main():
     save_mat(os.path.join(args.output_dir, f'data_test_{field_a}.mat'), test_a)
     save_mat(os.path.join(args.output_dir, f'data_test_{field_b}.mat'), test_b)
 
+    metadata = {
+        'data_root': args.data_root,
+        'contrast': args.contrast,
+        'field_a': field_a,
+        'field_b': field_b,
+        'crop_size': args.crop_size,
+        'empty_threshold': args.empty_threshold,
+        'val_ratio': args.val_ratio,
+        'seed': args.seed,
+        'counts': {
+            f'train_{field_a}': int(data_01T.shape[0] - n_val_01T),
+            f'val_{field_a}': int(n_val_01T),
+            f'train_{field_b}': int(data_15T.shape[0] - n_val_15T),
+            f'val_{field_b}': int(n_val_15T),
+            'test_paired': int(test_a.shape[0]),
+        },
+    }
+    with open(os.path.join(args.output_dir, 'metadata.json'), 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2)
+
     print("\n=== Done ===")
     for fname in sorted(os.listdir(args.output_dir)):
+        if not fname.endswith('.mat'):
+            continue
         fpath = os.path.join(args.output_dir, fname)
         sz_mb = os.path.getsize(fpath) / (1024 * 1024)
         with h5py.File(fpath, 'r') as f:
