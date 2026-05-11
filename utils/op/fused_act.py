@@ -6,24 +6,46 @@
 The license for the original version of this file can be found in this directory (LICENSE_MIT).
 """
 
+import ctypes
 import os
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.autograd import Function
-from torch.utils.cpp_extension import load
+from torch.utils.cpp_extension import load, _import_module_from_library
 
 
 module_path = os.path.dirname(__file__)
 print("module_path = {}".format(module_path))
-fused = load(
-    "fused",
-    sources=[
-        os.path.join(module_path, "fused_bias_act.cpp"),
-        os.path.join(module_path, "fused_bias_act_kernel.cu"),
-    ],
-)
+
+# Try prebuilt extension first, fall back to JIT compilation
+ext_dir = os.environ.get('TORCH_EXTENSIONS_DIR', '')
+prebuilt_dir = os.path.join(ext_dir, 'fused') if ext_dir else None
+if prebuilt_dir and os.path.exists(os.path.join(prebuilt_dir, 'fused.so')):
+    # Preload libcudart if present alongside the extensions
+    libcudart_path = os.path.join(ext_dir, 'libcudart.so.11.0')
+    if os.path.exists(libcudart_path):
+        try:
+            ctypes.CDLL(libcudart_path, mode=ctypes.RTLD_GLOBAL)
+        except Exception:
+            pass
+    try:
+        fused = _import_module_from_library("fused", prebuilt_dir, True)
+        print("Loaded prebuilt fused from {}".format(prebuilt_dir))
+    except Exception:
+        prebuilt_dir = None
+else:
+    prebuilt_dir = None
+
+if prebuilt_dir is None:
+    fused = load(
+        "fused",
+        sources=[
+            os.path.join(module_path, "fused_bias_act.cpp"),
+            os.path.join(module_path, "fused_bias_act_kernel.cu"),
+        ],
+    )
 
 
 class FusedLeakyReLUFunctionBackward(Function):

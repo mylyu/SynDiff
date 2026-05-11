@@ -6,22 +6,43 @@
 The license for the original version of this file can be found in this directory (LICENSE_MIT).
 """
 
+import ctypes
 import os
 
 import torch
 from torch.nn import functional as F
 from torch.autograd import Function
-from torch.utils.cpp_extension import load
+from torch.utils.cpp_extension import load, _import_module_from_library
 from collections import abc
 
 module_path = os.path.dirname(__file__)
-upfirdn2d_op = load(
-    "upfirdn2d",
-    sources=[
-        os.path.join(module_path, "upfirdn2d.cpp"),
-        os.path.join(module_path, "upfirdn2d_kernel.cu"),
-    ],
-)
+# Try prebuilt extension first, fall back to JIT compilation
+ext_dir = os.environ.get('TORCH_EXTENSIONS_DIR', '')
+prebuilt_dir = os.path.join(ext_dir, 'upfirdn2d') if ext_dir else None
+if prebuilt_dir and os.path.exists(os.path.join(prebuilt_dir, 'upfirdn2d.so')):
+    # Preload libcudart if present alongside the extensions
+    libcudart_path = os.path.join(ext_dir, 'libcudart.so.11.0')
+    if os.path.exists(libcudart_path):
+        try:
+            ctypes.CDLL(libcudart_path, mode=ctypes.RTLD_GLOBAL)
+        except Exception:
+            pass
+    try:
+        upfirdn2d_op = _import_module_from_library("upfirdn2d", prebuilt_dir, True)
+        print("Loaded prebuilt upfirdn2d from {}".format(prebuilt_dir))
+    except Exception:
+        prebuilt_dir = None
+else:
+    prebuilt_dir = None
+
+if prebuilt_dir is None:
+    upfirdn2d_op = load(
+        "upfirdn2d",
+        sources=[
+            os.path.join(module_path, "upfirdn2d.cpp"),
+            os.path.join(module_path, "upfirdn2d_kernel.cu"),
+        ],
+    )
 
 
 class UpFirDn2dBackward(Function):
@@ -151,6 +172,7 @@ class UpFirDn2d(Function):
 
 
 def upfirdn2d(input, kernel, up=1, down=1, pad=(0, 0)):
+    kernel = kernel.to(dtype=input.dtype)
     if input.device.type == "cpu":
         out = upfirdn2d_native(
             input, kernel, up, up, down, down, pad[0], pad[1], pad[0], pad[1]
@@ -164,6 +186,7 @@ def upfirdn2d(input, kernel, up=1, down=1, pad=(0, 0)):
     return out
 
 def upfirdn2d_ada(input, kernel, up=1, down=1, pad=(0, 0)):
+    kernel = kernel.to(dtype=input.dtype)
     if not isinstance(up, abc.Iterable):
         up = (up, up)
 
