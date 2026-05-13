@@ -1,82 +1,88 @@
-# SynDiff
+# MRIxFields 2026 — CUT + SynDiff
 
-Official PyTorch implementation of SynDiff described in the [paper](https://ieeexplore.ieee.org/document/10167641).
+Repository for the MRIxFields2026 challenge (Task 1 & 2). Primary model: **CUT** (contrastive unpaired translation). SynDiff experimental.
 
-Muzaffer Özbey*, Onat Dalmaz*, Salman UH Dar, Hasan A Bedel, Şaban Özturk, Alper Güngör, Tolga Çukur, "Unsupervised Medical Image Translation With Adversarial Diffusion Models," in IEEE Transactions on Medical Imaging, vol. 42, no. 12, pp. 3524-3539, Dec. 2023, doi: 10.1109/TMI.2023.3290149.
+Based on the [official MRIxFields2026 baseline](https://github.com/MRIxFields/MRIxFields2026) and the [SynDiff paper](https://ieeexplore.ieee.org/document/10167641).
 
-*: equal contribution
+## Setup
 
-<img src="./figures/adv_diff.png" width="600px">
-
-<img src="./figures/syndiff.png" width="600px">
-
-## Dependencies
-
-```
-python>=3.6.9
-torch>=1.7.1
-torchvision>=0.8.2
-cuda=>11.2
-ninja
-python3.x-dev (apt install, x should match your python3 version, ex: 3.8)
-```
-
-## Installation
-- Clone this repo:
 ```bash
-git clone https://github.com/icon-lab/SynDiff
-cd SynDiff
+git clone https://github.com/mylyu/SynDiff
+source activate.sh
 ```
 
-## Dataset
-You should structure your aligned dataset in the following way:
+Code lives on NFS at `/NAS_writeable/SynDiff/code/` — servers read from this path directly.
 
+## Servers
 
+| Server | GPUs | Data |
+|--------|------|------|
+| Local | 6× A40 (48 GB) | All `.mat` + npz |
+| 4090D | 2× RTX 4090D (48 GB) | `.mat` |
+| V100 | 8× V100 (32 GB) | `.mat` |
 
-```
-input_path/
-  ├── data_train_contrast1.mat
-  ├── data_train_contrast2.mat
-  ├── data_val_contrast1.mat
-  ├── data_val_contrast2.mat
-  ├── data_test_contrast1.mat
-  ├── data_test_contrast2.mat
-```
+## Data
 
-where .mat files has shape of (#images, width, height) and image values are between 0 and 1.0. 
-### Sample Data
-Sample toy data can also found under 'SynDiff_sample_data' folder of the repository. 
+Preprocessed `.mat` files (256×256, [-1,1]) at `/data0/syndiff_data/`:
+- `0.1T_to_7T/` — 0.1T ↔ 7T T1W (1/4 subset)
+- `1.5T_to_7T/` — 1.5T ↔ 7T T1W (1/4 subset)
+- `0.1T_to_1.5T/` — 0.1T ↔ 1.5T T1W (1/4 subset)
 
+npz cache for baseline pipeline at `/data0/syndiff_data/npz_cache_quarter/`.
 
+Raw NIfTI source files at `/data0/MRIxFields2026/TrainingData/release_20260414/` (local only).
 
-## Train
+## Training
 
-<br />
+### CUT (primary)
 
-```
-python3 train.py --image_size 256 --exp exp_syndiff --num_channels 2 --num_channels_dae 64 --ch_mult 1 1 2 2 4 4 --num_timesteps 4 --num_res_blocks 2 --batch_size 1 --contrast1 T1 --contrast2 T2 --num_epoch 500 --ngf 64 --embedding_type positional --use_ema --ema_decay 0.999 --r1_gamma 1. --z_emb_dim 256 --lr_d 1e-4 --lr_g 1.6e-4 --lazy_reg 10 --num_process_per_node 1 --save_content --local_rank 0 --input_path /input/path/for/data --output_path /output/for/results
-```
-
-<br />
-
-## Pretrained Models
-We have released pretrained diffusive generators for [T1->PD and PD->T1](https://drive.google.com/file/d/1Hfvnz29NaTFqPMX6RGaEv4Qnt8HeoxZz/view?usp=sharing) tasks in IXI and [T1->T2 and T2->T1](https://drive.google.com/file/d/1zGzZPVY-Xp2Flc7GicOD7s4taxcjwCsn/view?usp=sharing) tasks in BRATS datasets. You can save these weights in relevant checkpoints folder and perform inference.
-
-## Test
-
-<br />
-
-```
-python test.py --image_size 256 --exp exp_syndiff --num_channels 2 --num_channels_dae 64 --ch_mult 1 1 2 2 4 4 --num_timesteps 4 --num_res_blocks 2 --batch_size 1 --embedding_type positional  --z_emb_dim 256 --contrast1 T1  --contrast2 T2 --which_epoch 50 --gpu_chose 0 --input_path /input/path/for/data --output_path /output/for/results
+```bash
+# Single GPU
+python3 code/experiments/run_exp_b.py \
+  --input_path /data0/syndiff_data/1.5T_to_7T \
+  --output_dir /NAS_writeable/SynDiff/checkpoints \
+  --exp CUT_15T_7T --src_field 1.5T --tgt_field 7T \
+  --batch_size 8 --num_epoch 100 --lr 2e-4 --device cuda:0
 ```
 
-<br />
-<br />
+### CUT launcher (for remote servers)
 
+```bash
+ssh <IP> "nohup bash /NAS_writeable/SynDiff/launch_cut_generic.sh \
+  <gpu> <src_field> <tgt_field> <data_dir> <exp_name> <epochs> &>/dev/null &"
+```
 
-# Citation
-Preliminary versions of SynDiff are presented in [NeurIPS Medical Imaging Meets](https://www.cse.cuhk.edu.hk/~qdou/public/medneurips2022/105.pdf) and IEEE ISBI 2023.
-You are encouraged to modify/distribute this code. However, please acknowledge this code and cite the paper appropriately.
+### SynDiff (experimental)
+
+```bash
+python3 code/train.py \
+  --image_size 256 --exp syn_test \
+  --num_channels 2 --num_channels_dae 64 \
+  --ch_mult 1 1 2 2 4 4 --num_timesteps 4 --num_res_blocks 2 \
+  --batch_size 4 --contrast1 1.5T --contrast2 7T --num_epoch 20 \
+  --ngf 64 --embedding_type positional --use_ema --ema_decay 0.999 \
+  --r1_gamma 1.0 --z_emb_dim 256 --t_emb_dim 256 \
+  --lr_d 1e-4 --lr_g 1.6e-4 --lazy_reg 10 --lambda_l1_loss 0.5 \
+  --num_process_per_node 2 \
+  --input_path /data0/syndiff_data/1.5T_to_7T \
+  --output_path /NAS_writeable/SynDiff/checkpoints
+```
+
+## Evaluation
+
+- `code/experiments/eval_exp_b.py` — CUT checkpoint evaluation (nRMSE, SSIM)
+- `code/experiments/eval_paired.py` — paired test-set eval for SynDiff
+- `code/compute_official_metrics.py` — official MRIxFields metrics from saved predictions
+
+## Results
+
+CUT achieves nRMSE ~0.87 on 1.5T→7T with our `.mat` data (20 epochs). Full 100-epoch training in progress.
+
+SynDiff best nRMSE ~1.13 but degrades over time — parked for now.
+
+## Citation
+
+SynDiff paper:
 ```
 @ARTICLE{ozbey_dalmaz_syndiff_2024,
   author={Özbey, Muzaffer and Dalmaz, Onat and Dar, Salman U. H. and Bedel, Hasan A. and Özturk, Şaban and Güngör, Alper and Çukur, Tolga},
@@ -86,17 +92,7 @@ You are encouraged to modify/distribute this code. However, please acknowledge t
   volume={42},
   number={12},
   pages={3524-3539},
-  keywords={Biological system modeling;Computational modeling;Training;Generative adversarial networks;Image synthesis;Task analysis;Generators;Medical image translation;synthesis;unsupervised;unpaired;adversarial;diffusion;generative},
   doi={10.1109/TMI.2023.3290149}}
-
-
 ```
-For any questions, comments and contributions, please contact Muzaffer Özbey (muzafferozbey94[at]gmail.com) or Onat Dalmaz (onat[at]stanford.edu) <br />
 
-(c) ICON Lab 2023
-
-<br />
-
-# Acknowledgements
-
-This code uses libraries from, [pGAN](https://github.com/icon-lab/pGAN-cGAN), [StyleGAN-2](https://github.com/NVlabs/stylegan2), and [DD-GAN](https://github.com/NVlabs/denoising-diffusion-gan) repositories.
+Baseline code from [MRIxFields2026](https://github.com/MRIxFields/MRIxFields2026), [CUT](https://github.com/taesungp/contrastive-unpaired-translation), [StyleGAN-2](https://github.com/NVlabs/stylegan2), [DD-GAN](https://github.com/NVlabs/denoising-diffusion-gan).
