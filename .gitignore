@@ -1,6 +1,4 @@
 *.pyc
 *pycache*
 saved_info/*
-saved_info.claude/
-claude_code_env.sh
-package-lock.json
+saved_info
