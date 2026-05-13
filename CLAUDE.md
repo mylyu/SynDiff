@@ -1,4 +1,4 @@
-# Claude Code Instructions for SynDiff Project
+# Claude Code Instructions for MRIxField Challenge Project
 
 ## Code Location
 
@@ -26,8 +26,16 @@ with our .mat data and is the primary model now.
 | Server | IP | GPUs | Data |
 |--------|----|------|------|
 | Local | — | 6× A40 (48 GB) | All .mat data + npz |
-| 4090D | 10.102.3.251 | 2× RTX 4090D | `.mat` data |
-| V100 | 10.102.3.250 | 8× V100 (32 GB) | `.mat` data |
+| 4090D | `ssh jupyter-mylyu@10.102.3.251` | 2× RTX 4090D | `.mat` data |
+| V100 | `ssh jupyter-mylyu@10.102.3.250` | 8× V100 (32 GB) | `.mat` data |
+
+**SSH access**: `ssh jupyter-mylyu@<IP>` from local server. All servers share the same user (`jupyter-mylyu`) and read code from NFS.
+
+**Check GPU**: `nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader`
+
+**Launch training**: `ssh <IP> "nohup bash /NAS_writeable/SynDiff/<launch_script>.sh &>/dev/null &"`
+
+**Copy data between servers**: Relay through local machine — `cat` pipe since direct SCP between remote servers requires host key setup.
 
 Activate env: `source /NAS_writeable/SynDiff/activate.sh`
 
@@ -44,14 +52,6 @@ Activate env: `source /NAS_writeable/SynDiff/activate.sh`
 **npz cache** (for baseline pipeline):
 - Full: `/data0/syndiff_data/npz_cache_retro_T1W/` (local + V100)
 - Quarter: `/data0/syndiff_data/npz_cache_quarter/` (local + V100)
-
-## Current Experiments (all CUT)
-
-| Server | GPUs | Task | Epochs | Status |
-|--------|------|------|--------|--------|
-| Local 0-2 | 3 | 1.5T/0.1T/0.1T→1.5T | 100 | ~37/100 |
-| V100 0-7 | 8 | Various | 30-100 | Running |
-| 4090D 0-1 | 2 | 1.5T→7T | 100 | Running |
 
 ## PDF Improvement Directions
 
